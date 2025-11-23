@@ -1,10 +1,65 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Film, FileType, Settings, Play, Download, CheckCircle, Eye, Loader2, RefreshCcw, AlertCircle, HardDrive, Zap } from 'lucide-react';
+import { Upload, Film, FileType, Settings, Play, Download, CheckCircle, Eye, Loader2, RefreshCcw, AlertCircle, HardDrive, Zap, Type, Palette, Layout, AlignVerticalJustifyCenter, Wand2, Trash2, Save, Plus, X } from 'lucide-react';
 import { Logo } from './components/Logo';
 import { CloudButton } from './components/CloudButton';
 import { ffmpegService } from './services/ffmpegService';
-import { AppStep, CloudProvider } from './types';
+import { AppStep, CloudProvider, SubtitleStyle } from './types';
+
+const PRESETS: { name: string; style: SubtitleStyle }[] = [
+  {
+    name: 'Classic Yellow',
+    style: {
+      fontSize: 24,
+      primaryColor: '#FFFF00',
+      outlineColor: '#000000',
+      outlineWidth: 2,
+      marginV: 30,
+      alignment: 2,
+      bold: true,
+      italic: false,
+    }
+  },
+  {
+    name: 'Modern White',
+    style: {
+      fontSize: 24,
+      primaryColor: '#FFFFFF',
+      outlineColor: '#000000',
+      outlineWidth: 1.5,
+      marginV: 35,
+      alignment: 2,
+      bold: false,
+      italic: false,
+    }
+  },
+  {
+    name: 'Neon Blue',
+    style: {
+      fontSize: 26,
+      primaryColor: '#00FFFF',
+      outlineColor: '#000000',
+      outlineWidth: 2,
+      marginV: 30,
+      alignment: 2,
+      bold: true,
+      italic: false,
+    }
+  },
+  {
+    name: 'Minimalist',
+    style: {
+      fontSize: 18,
+      primaryColor: '#E0E0E0',
+      outlineColor: '#111111',
+      outlineWidth: 0.5,
+      marginV: 25,
+      alignment: 2,
+      bold: false,
+      italic: true,
+    }
+  }
+];
 
 const App: React.FC = () => {
   // State
@@ -13,6 +68,14 @@ const App: React.FC = () => {
   const [subFile, setSubFile] = useState<File | null>(null);
   const [fps, setFps] = useState<number>(30);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
+  
+  // Subtitle Style State
+  const [subStyle, setSubStyle] = useState<SubtitleStyle>(PRESETS[0].style);
+  
+  // Custom Presets State
+  const [customPresets, setCustomPresets] = useState<{ name: string; style: SubtitleStyle }[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [newPresetName, setNewPresetName] = useState('');
   
   // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
@@ -43,12 +106,24 @@ const App: React.FC = () => {
     };
   }, [previewUrl]);
 
+  // Load saved presets on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('javth_custom_presets');
+    if (saved) {
+      try {
+        setCustomPresets(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to parse saved presets", e);
+      }
+    }
+  }, []);
+
   // Invalidate preview when settings change
   useEffect(() => {
     if (previewUrl) {
        // Optional: setPreviewUrl(null); 
     }
-  }, [fps, subFile]);
+  }, [fps, subFile, subStyle]);
 
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -68,10 +143,27 @@ const App: React.FC = () => {
 
   const handleCloudClick = (provider: CloudProvider) => {
     // Simulate cloud integration by opening file picker
-    // In a real PWA/Desktop app, this would use the File System Access API or provider SDKs
     setLogMessage(`Requesting file from ${provider}...`);
-    // Trigger the video input as if coming from that source
     videoInputRef.current?.click();
+  };
+
+  const handleSavePreset = () => {
+    if (!newPresetName.trim()) return;
+    const newPreset = { name: newPresetName, style: { ...subStyle } };
+    const updated = [...customPresets, newPreset];
+    setCustomPresets(updated);
+    localStorage.setItem('javth_custom_presets', JSON.stringify(updated));
+    setIsSaving(false);
+    setNewPresetName('');
+  };
+
+  const handleDeletePreset = (index: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm("Are you sure you want to delete this preset?")) {
+      const updated = customPresets.filter((_, i) => i !== index);
+      setCustomPresets(updated);
+      localStorage.setItem('javth_custom_presets', JSON.stringify(updated));
+    }
   };
 
   const generatePreview = async () => {
@@ -86,7 +178,7 @@ const App: React.FC = () => {
 
     try {
       // Use the service to generate a 5s preview
-      const url = await ffmpegService.createPreview(videoFile, subFile, fps);
+      const url = await ffmpegService.createPreview(videoFile, subFile, fps, subStyle);
       setPreviewUrl(url);
     } catch (err: any) {
       console.error(err);
@@ -117,7 +209,8 @@ const App: React.FC = () => {
         videoFile,
         subFile,
         fps,
-        `JAV_TH_Processed_${Date.now()}.mp4`
+        `JAV_TH_Processed_${Date.now()}.mp4`,
+        subStyle
       );
 
       setOutputUrl(url);
@@ -125,7 +218,7 @@ const App: React.FC = () => {
     } catch (err: any) {
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : "Unknown error occurred";
-      setError(`Error: ${errorMessage}. (Ensure your device has free RAM)`);
+      setError(errorMessage);
       setStep(AppStep.SETTINGS); // Go back
     } finally {
       setIsProcessing(false);
@@ -291,7 +384,7 @@ const App: React.FC = () => {
                             </div>
                             <div>
                                <p className="font-bold text-white uppercase">Upload Subtitles</p>
-                               <p className="text-xs text-gray-500 mt-1">.SRT format recommended</p>
+                               <p className="text-xs text-gray-500 mt-1">Supports .SRT, .VTT, .ASS</p>
                             </div>
                           </>
                         )}
@@ -333,7 +426,7 @@ const App: React.FC = () => {
 
         {/* STEP 2: SETTINGS */}
         {step === AppStep.SETTINGS && (
-          <div className="max-w-3xl mx-auto animate-fade-in">
+          <div className="max-w-4xl mx-auto animate-fade-in">
              <div className="bg-jav-black border border-jav-gray rounded-3xl p-8 shadow-2xl relative">
                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-jav-red to-jav-yellow"></div>
                 
@@ -341,97 +434,333 @@ const App: React.FC = () => {
                   <Settings className="text-jav-yellow" size={32} /> Configuration
                 </h2>
 
-                <div className="space-y-8">
-                  {/* FPS Slider */}
-                  <div className="bg-jav-dark p-6 rounded-2xl border border-gray-800">
-                    <div className="flex justify-between mb-6 items-end">
-                      <label className="text-white font-bold uppercase tracking-wider text-sm">Target Frame Rate</label>
-                      <div className="px-3 py-1 bg-jav-yellow text-black font-black text-xl rounded transform -rotate-2">
-                         {fps} FPS
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  {/* LEFT COLUMN: Controls */}
+                  <div className="space-y-6">
+                    {/* FPS Slider */}
+                    <div className="bg-jav-dark p-6 rounded-2xl border border-gray-800">
+                      <div className="flex justify-between mb-4 items-end">
+                        <label className="text-white font-bold uppercase tracking-wider text-sm flex items-center gap-2">
+                          <Film size={16} /> Frame Rate
+                        </label>
+                        <div className="px-3 py-1 bg-jav-yellow text-black font-black text-sm rounded">
+                          {fps} FPS
+                        </div>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="15" 
+                        max="60" 
+                        step="1"
+                        value={fps} 
+                        onChange={(e) => setFps(parseInt(e.target.value))}
+                        className="w-full h-2 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-jav-red hover:accent-jav-yellow transition-all"
+                      />
+                    </div>
+
+                    {/* Subtitle Appearance */}
+                    <div className="bg-jav-dark p-6 rounded-2xl border border-gray-800">
+                      <h3 className="text-white font-bold uppercase tracking-wider text-sm flex items-center gap-2 mb-6 border-b border-gray-800 pb-2">
+                        <Palette size={16} /> Subtitle Style
+                      </h3>
+
+                       {/* Preset Styles Selector */}
+                       <div className="mb-6">
+                          <div className="flex justify-between items-end mb-3">
+                             <label className="text-gray-400 text-xs font-bold uppercase flex items-center gap-2">
+                               <Wand2 size={12} /> Quick Presets
+                             </label>
+                             
+                             {/* Save Preset UI */}
+                             {isSaving ? (
+                               <div className="flex items-center gap-2 bg-black/50 p-1 rounded-lg border border-jav-yellow/50 animate-fade-in">
+                                 <input 
+                                   type="text" 
+                                   value={newPresetName}
+                                   onChange={(e) => setNewPresetName(e.target.value)}
+                                   placeholder="Preset Name"
+                                   className="bg-transparent text-white text-xs px-2 py-1 outline-none w-24"
+                                   autoFocus
+                                   onKeyDown={(e) => e.key === 'Enter' && handleSavePreset()}
+                                 />
+                                 <button onClick={handleSavePreset} disabled={!newPresetName.trim()} className="text-green-500 hover:text-green-400 p-1"><CheckCircle size={14} /></button>
+                                 <button onClick={() => setIsSaving(false)} className="text-red-500 hover:text-red-400 p-1"><X size={14} /></button>
+                               </div>
+                             ) : (
+                               <button 
+                                 onClick={() => setIsSaving(true)} 
+                                 className="text-[10px] bg-jav-gray hover:bg-white hover:text-black text-white px-2 py-1 rounded flex items-center gap-1 transition-colors border border-gray-700"
+                               >
+                                  <Save size={10} /> SAVE CURRENT
+                               </button>
+                             )}
+                          </div>
+
+                          {/* System Presets Grid */}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                            {PRESETS.map((preset) => (
+                              <button
+                                key={preset.name}
+                                onClick={() => setSubStyle(preset.style)}
+                                className="group relative rounded-lg border border-gray-700 bg-black/40 p-2 hover:border-jav-red transition-all duration-300 active:scale-95"
+                              >
+                                <div className="w-full h-8 mb-2 rounded flex items-center justify-center text-xs overflow-hidden bg-gray-900/50"
+                                    style={{ fontFamily: 'Arial, sans-serif' }}>
+                                    <span style={{
+                                      color: preset.style.primaryColor,
+                                      fontWeight: preset.style.bold ? 'bold' : 'normal',
+                                      fontStyle: preset.style.italic ? 'italic' : 'normal',
+                                      textShadow: `
+                                        -${preset.style.outlineWidth}px -${preset.style.outlineWidth}px 0 ${preset.style.outlineColor},  
+                                        ${preset.style.outlineWidth}px -${preset.style.outlineWidth}px 0 ${preset.style.outlineColor},
+                                        -${preset.style.outlineWidth}px  ${preset.style.outlineWidth}px 0 ${preset.style.outlineColor},
+                                        ${preset.style.outlineWidth}px  ${preset.style.outlineWidth}px 0 ${preset.style.outlineColor}
+                                      `
+                                    }}>Abc</span>
+                                </div>
+                                <span className="block text-[10px] text-gray-400 font-bold uppercase tracking-wide group-hover:text-white text-center truncate">
+                                  {preset.name}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* Custom Presets Grid */}
+                          {customPresets.length > 0 && (
+                            <div className="animate-fade-in mt-4 pt-4 border-t border-gray-800">
+                               <label className="text-gray-500 text-[10px] font-bold uppercase mb-2 block flex items-center gap-2">
+                                  <HardDrive size={10} /> My Saved Styles
+                               </label>
+                               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                  {customPresets.map((preset, idx) => (
+                                      <button
+                                        key={`custom-${idx}`}
+                                        onClick={() => setSubStyle(preset.style)}
+                                        className="group relative rounded-lg border border-jav-yellow/30 bg-jav-yellow/5 p-2 hover:border-jav-yellow hover:bg-jav-yellow/10 transition-all duration-300 w-full active:scale-95"
+                                      >
+                                        <div className="w-full h-8 mb-2 rounded flex items-center justify-center text-xs overflow-hidden bg-black/50"
+                                            style={{ fontFamily: 'Arial, sans-serif' }}>
+                                            <span style={{
+                                              color: preset.style.primaryColor,
+                                              fontWeight: preset.style.bold ? 'bold' : 'normal',
+                                              fontStyle: preset.style.italic ? 'italic' : 'normal',
+                                              textShadow: `
+                                                -${preset.style.outlineWidth}px -${preset.style.outlineWidth}px 0 ${preset.style.outlineColor},  
+                                                ${preset.style.outlineWidth}px -${preset.style.outlineWidth}px 0 ${preset.style.outlineColor},
+                                                -${preset.style.outlineWidth}px  ${preset.style.outlineWidth}px 0 ${preset.style.outlineColor},
+                                                ${preset.style.outlineWidth}px  ${preset.style.outlineWidth}px 0 ${preset.style.outlineColor}
+                                              `
+                                            }}>Abc</span>
+                                        </div>
+                                        <span className="block text-[10px] text-jav-yellow font-bold uppercase tracking-wide group-hover:text-white text-center truncate pr-4">
+                                          {preset.name}
+                                        </span>
+                                        <div 
+                                          onClick={(e) => handleDeletePreset(idx, e)}
+                                          className="absolute top-1 right-1 p-1 text-red-900/50 hover:text-red-500 cursor-pointer opacity-0 group-hover:opacity-100 transition-all z-10"
+                                          title="Delete Preset"
+                                        >
+                                          <Trash2 size={12} />
+                                        </div>
+                                      </button>
+                                  ))}
+                               </div>
+                            </div>
+                          )}
+                       </div>
+                      
+                      <div className="space-y-6 pt-2 border-t border-gray-800/50">
+                         {/* Size & Position */}
+                         <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="text-gray-400 text-xs font-bold uppercase mb-2 block">Size</label>
+                              <input 
+                                type="range" min="12" max="72" value={subStyle.fontSize}
+                                onChange={(e) => setSubStyle({...subStyle, fontSize: parseInt(e.target.value)})}
+                                className="w-full h-1.5 bg-gray-800 rounded appearance-none cursor-pointer accent-white"
+                              />
+                              <div className="text-right text-[10px] text-gray-500 mt-1">{subStyle.fontSize}px</div>
+                            </div>
+                            <div>
+                              <label className="text-gray-400 text-xs font-bold uppercase mb-2 block">Margin V</label>
+                              <input 
+                                type="range" min="0" max="200" value={subStyle.marginV}
+                                onChange={(e) => setSubStyle({...subStyle, marginV: parseInt(e.target.value)})}
+                                className="w-full h-1.5 bg-gray-800 rounded appearance-none cursor-pointer accent-white"
+                              />
+                              <div className="text-right text-[10px] text-gray-500 mt-1">{subStyle.marginV}px</div>
+                            </div>
+                         </div>
+
+                         {/* Colors */}
+                         <div className="grid grid-cols-2 gap-4">
+                           <div>
+                              <label className="text-gray-400 text-xs font-bold uppercase mb-2 block">Text Color</label>
+                              <div className="flex items-center gap-2">
+                                <input 
+                                  type="color" 
+                                  value={subStyle.primaryColor}
+                                  onChange={(e) => setSubStyle({...subStyle, primaryColor: e.target.value})}
+                                  className="w-8 h-8 rounded cursor-pointer bg-transparent border-none"
+                                />
+                                <span className="text-xs font-mono text-gray-400">{subStyle.primaryColor}</span>
+                              </div>
+                           </div>
+                           <div>
+                              <label className="text-gray-400 text-xs font-bold uppercase mb-2 block">Outline</label>
+                              <div className="flex items-center gap-2">
+                                <input 
+                                  type="color" 
+                                  value={subStyle.outlineColor}
+                                  onChange={(e) => setSubStyle({...subStyle, outlineColor: e.target.value})}
+                                  className="w-8 h-8 rounded cursor-pointer bg-transparent border-none"
+                                />
+                                <span className="text-xs font-mono text-gray-400">{subStyle.outlineColor}</span>
+                              </div>
+                           </div>
+                         </div>
+
+                         {/* Outline Width & Toggles */}
+                         <div>
+                            <label className="text-gray-400 text-xs font-bold uppercase mb-2 block flex justify-between">
+                              Outline Width <span>{subStyle.outlineWidth}px</span>
+                            </label>
+                            <input 
+                              type="range" min="0" max="8" step="0.5" value={subStyle.outlineWidth}
+                              onChange={(e) => setSubStyle({...subStyle, outlineWidth: parseFloat(e.target.value)})}
+                              className="w-full h-1.5 bg-gray-800 rounded appearance-none cursor-pointer accent-white mb-4"
+                            />
+
+                            <div className="flex gap-2">
+                              <button 
+                                onClick={() => setSubStyle({...subStyle, bold: !subStyle.bold})}
+                                className={`flex-1 py-2 rounded text-xs font-bold uppercase border transition-colors ${subStyle.bold ? 'bg-white text-black border-white' : 'bg-transparent text-gray-500 border-gray-700'}`}
+                              >
+                                BOLD
+                              </button>
+                              <button 
+                                onClick={() => setSubStyle({...subStyle, italic: !subStyle.italic})}
+                                className={`flex-1 py-2 rounded text-xs font-bold uppercase border transition-colors ${subStyle.italic ? 'bg-white text-black border-white' : 'bg-transparent text-gray-500 border-gray-700'}`}
+                              >
+                                ITALIC
+                              </button>
+                            </div>
+                         </div>
+                         
+                         {/* Alignment */}
+                         <div>
+                            <label className="text-gray-400 text-xs font-bold uppercase mb-2 block">Position</label>
+                            <div className="flex gap-2 bg-black/50 p-1 rounded-lg">
+                               <button 
+                                  onClick={() => setSubStyle({...subStyle, alignment: 8})}
+                                  className={`flex-1 py-1.5 rounded text-[10px] font-bold uppercase transition-colors ${subStyle.alignment === 8 ? 'bg-jav-red text-white' : 'text-gray-500 hover:text-white'}`}
+                               >
+                                 TOP
+                               </button>
+                               <button 
+                                  onClick={() => setSubStyle({...subStyle, alignment: 5})}
+                                  className={`flex-1 py-1.5 rounded text-[10px] font-bold uppercase transition-colors ${subStyle.alignment === 5 ? 'bg-jav-red text-white' : 'text-gray-500 hover:text-white'}`}
+                               >
+                                 MIDDLE
+                               </button>
+                               <button 
+                                  onClick={() => setSubStyle({...subStyle, alignment: 2})}
+                                  className={`flex-1 py-1.5 rounded text-[10px] font-bold uppercase transition-colors ${subStyle.alignment === 2 ? 'bg-jav-red text-white' : 'text-gray-500 hover:text-white'}`}
+                               >
+                                 BOTTOM
+                               </button>
+                            </div>
+                         </div>
                       </div>
                     </div>
-                    <input 
-                      type="range" 
-                      min="15" 
-                      max="60" 
-                      step="1"
-                      value={fps} 
-                      onChange={(e) => setFps(parseInt(e.target.value))}
-                      className="w-full h-3 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-jav-red hover:accent-jav-yellow transition-all"
-                    />
-                    <div className="flex justify-between text-[10px] text-gray-500 mt-3 font-mono uppercase">
-                      <span>15 (Anime/Low)</span>
-                      <span>24 (Cinematic)</span>
-                      <span>30 (NTSC/Web)</span>
-                      <span>60 (Smooth)</span>
-                    </div>
                   </div>
 
-                  {/* PREVIEW SECTION */}
-                  <div className="bg-black p-1 rounded-2xl border border-gray-800 shadow-inner">
-                     <div className="bg-jav-dark/50 rounded-xl overflow-hidden p-4">
-                        <div className="flex items-center justify-between mb-4">
-                           <div className="flex items-center gap-2">
-                             <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                             <h3 className="text-white font-bold text-sm uppercase">Preview Window</h3>
-                           </div>
-                           <button 
-                             onClick={generatePreview}
-                             disabled={isPreviewGenerating}
-                             className="text-[10px] font-bold bg-jav-gray hover:bg-white hover:text-black text-white px-3 py-1.5 rounded transition-all flex items-center gap-2 border border-gray-700"
-                           >
-                             {isPreviewGenerating ? <Loader2 size={12} className="animate-spin" /> : <RefreshCcw size={12} />}
-                             {previewUrl ? 'REFRESH PREVIEW' : 'GENERATE SNIPPET'}
-                           </button>
-                        </div>
-
-                        <div className="relative min-h-[200px] bg-black/80 rounded-lg flex items-center justify-center border border-white/5 overflow-hidden">
-                           {isPreviewGenerating ? (
-                             <div className="flex flex-col items-center gap-3">
-                               <Loader2 className="w-8 h-8 text-jav-yellow animate-spin" />
-                               <span className="text-xs text-jav-yellow font-mono">RENDERING 5S CLIP...</span>
+                  {/* RIGHT COLUMN: Preview & Actions */}
+                  <div className="flex flex-col gap-6">
+                    {/* PREVIEW SECTION */}
+                    <div className="bg-black p-1 rounded-2xl border border-gray-800 shadow-inner flex-grow flex flex-col">
+                       <div className="bg-jav-dark/50 rounded-xl overflow-hidden p-4 flex-grow flex flex-col">
+                          <div className="flex items-center justify-between mb-4">
+                             <div className="flex items-center gap-2">
+                               <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                               <h3 className="text-white font-bold text-sm uppercase">Preview Window</h3>
                              </div>
-                           ) : previewUrl ? (
-                             <video 
-                               controls 
-                               autoPlay 
-                               loop 
-                               src={previewUrl} 
-                               className="w-full h-full object-contain max-h-[350px]" 
-                             />
-                           ) : (
-                             <div className="text-center p-8 opacity-50">
-                               <Play className="w-12 h-12 text-white mx-auto mb-3" />
-                               <p className="text-xs text-gray-400 max-w-[200px] mx-auto">
-                                 Check subtitle sync and frame smoothness before full render.
-                               </p>
-                             </div>
-                           )}
-                        </div>
-                     </div>
-                  </div>
+                             <button 
+                               onClick={generatePreview}
+                               disabled={isPreviewGenerating}
+                               className="text-[10px] font-bold bg-jav-gray hover:bg-white hover:text-black text-white px-3 py-1.5 rounded transition-all flex items-center gap-2 border border-gray-700"
+                             >
+                               {isPreviewGenerating ? <Loader2 size={12} className="animate-spin" /> : <RefreshCcw size={12} />}
+                               {previewUrl ? 'REFRESH' : 'GENERATE'}
+                             </button>
+                          </div>
 
-                   {/* Error Display */}
-                   {error && (
-                    <div className="bg-red-950/30 border border-red-500/50 p-4 rounded-xl flex items-start gap-3 animate-pulse">
-                      <AlertCircle className="text-red-500 flex-shrink-0" size={20} />
-                      <p className="text-red-200 text-sm font-medium">{error}</p>
+                          <div className="relative flex-grow min-h-[250px] bg-black/80 rounded-lg flex items-center justify-center border border-white/5 overflow-hidden">
+                             {isPreviewGenerating ? (
+                               <div className="flex flex-col items-center gap-3">
+                                 <Loader2 className="w-8 h-8 text-jav-yellow animate-spin" />
+                                 <span className="text-xs text-jav-yellow font-mono">RENDERING 5S CLIP...</span>
+                               </div>
+                             ) : previewUrl ? (
+                               <video 
+                                 controls 
+                                 autoPlay 
+                                 loop 
+                                 src={previewUrl} 
+                                 className="w-full h-full object-contain max-h-[400px]" 
+                               />
+                             ) : (
+                               <div className="text-center p-8 opacity-50">
+                                 <Play className="w-12 h-12 text-white mx-auto mb-3" />
+                                 <p className="text-xs text-gray-400 max-w-[200px] mx-auto">
+                                   Click GENERATE to check subtitle sync and styling.
+                                 </p>
+                                 {/* Live Text Preview (Static CSS Approximation) */}
+                                 <div className="mt-8 pointer-events-none select-none">
+                                    <span style={{
+                                       color: subStyle.primaryColor,
+                                       fontSize: `${subStyle.fontSize}px`,
+                                       fontWeight: subStyle.bold ? 'bold' : 'normal',
+                                       fontStyle: subStyle.italic ? 'italic' : 'normal',
+                                       textShadow: `
+                                         -${subStyle.outlineWidth}px -${subStyle.outlineWidth}px 0 ${subStyle.outlineColor},  
+                                          ${subStyle.outlineWidth}px -${subStyle.outlineWidth}px 0 ${subStyle.outlineColor},
+                                         -${subStyle.outlineWidth}px  ${subStyle.outlineWidth}px 0 ${subStyle.outlineColor},
+                                          ${subStyle.outlineWidth}px  ${subStyle.outlineWidth}px 0 ${subStyle.outlineColor}
+                                       `,
+                                       fontFamily: 'Arial, sans-serif'
+                                    }}>
+                                      Preview Text Style
+                                    </span>
+                                 </div>
+                               </div>
+                             )}
+                          </div>
+                       </div>
                     </div>
-                  )}
 
-                  <div className="flex gap-4 pt-4 border-t border-gray-800">
-                    <button 
-                      onClick={() => setStep(AppStep.UPLOAD)}
-                      className="px-6 py-4 rounded-xl font-bold text-gray-400 hover:text-white hover:bg-jav-gray transition-colors"
-                    >
-                      BACK
-                    </button>
-                    <button 
-                      onClick={startProcessing}
-                      className="flex-1 px-6 py-4 rounded-xl font-black text-white bg-jav-red hover:bg-red-600 shadow-lg shadow-red-900/30 transition-all flex items-center justify-center gap-2 uppercase tracking-wide"
-                    >
-                       START RENDERING <Play fill="currentColor" size={16} />
-                    </button>
+                     {/* Error Display */}
+                     {error && (
+                      <div className="bg-red-950/30 border border-red-500/50 p-4 rounded-xl flex items-start gap-3 animate-pulse">
+                        <AlertCircle className="text-red-500 flex-shrink-0" size={20} />
+                        <p className="text-red-200 text-sm font-medium">{error}</p>
+                      </div>
+                    )}
+
+                    <div className="flex gap-4">
+                      <button 
+                        onClick={() => setStep(AppStep.UPLOAD)}
+                        className="px-6 py-4 rounded-xl font-bold text-gray-400 hover:text-white hover:bg-jav-gray transition-colors"
+                      >
+                        BACK
+                      </button>
+                      <button 
+                        onClick={startProcessing}
+                        className="flex-1 px-6 py-4 rounded-xl font-black text-white bg-jav-red hover:bg-red-600 shadow-lg shadow-red-900/30 transition-all flex items-center justify-center gap-2 uppercase tracking-wide"
+                      >
+                         START RENDERING <Play fill="currentColor" size={16} />
+                      </button>
+                    </div>
                   </div>
                 </div>
              </div>

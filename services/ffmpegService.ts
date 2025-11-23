@@ -1,4 +1,6 @@
 
+import { SubtitleStyle } from '../types';
+
 export class FFmpegService {
   private ffmpeg: any = null;
   private loaded: boolean = false;
@@ -7,7 +9,6 @@ export class FFmpegService {
 
   constructor() {
     // Constructor remains empty to prevent errors during module evaluation.
-    // Initialization happens in ensureInstance()
   }
 
   private get globalFFmpeg() {
@@ -18,66 +19,112 @@ export class FFmpegService {
     return (window as any).FFmpegUtil;
   }
 
-  private ensureInstance() {
-    if (this.ffmpeg) return;
+  /**
+   * Polls for the global FFmpeg object to be available.
+   * This handles cases where the script takes a few seconds to load from CDN.
+   */
+  private async waitForGlobals(): Promise<void> {
+    if (this.globalFFmpeg && this.globalFFmpeg.FFmpeg) return;
 
-    if (!this.globalFFmpeg || !this.globalFFmpeg.FFmpeg) {
-      throw new Error("FFmpeg library not loaded. Please wait a moment or refresh the page.");
+    let retries = 0;
+    while (retries < 50) { // Wait up to 5 seconds
+      await new Promise(r => setTimeout(r, 100));
+      if (this.globalFFmpeg && this.globalFFmpeg.FFmpeg) return;
+      retries++;
     }
-
-    const FFmpegClass = this.globalFFmpeg.FFmpeg;
-    this.ffmpeg = new FFmpegClass();
-
-    // Attach persistent listeners that delegate to the current callback function
-    this.ffmpeg.on('log', ({ message }: { message: string }) => {
-      if (this.logCallback) this.logCallback(message);
-    });
-
-    this.ffmpeg.on('progress', ({ progress }: { progress: number }) => {
-      if (this.progressCallback) this.progressCallback(Math.round(progress * 100));
-    });
+    throw new Error("FFmpeg library failed to load. Please check your internet connection, ad blockers, or refresh the page.");
   }
 
+  /**
+   * Initializes the FFmpeg instance if not already done.
+   */
   async load() {
-    this.ensureInstance();
-    if (this.loaded) return;
+    if (this.loaded && this.ffmpeg) return;
+
+    await this.waitForGlobals();
+
+    if (!this.ffmpeg) {
+        const FFmpegClass = this.globalFFmpeg.FFmpeg;
+        this.ffmpeg = new FFmpegClass();
+
+        // Attach persistent listeners that delegate to the current callback function
+        this.ffmpeg.on('log', ({ message }: { message: string }) => {
+            if (this.logCallback) this.logCallback(message);
+        });
+
+        this.ffmpeg.on('progress', ({ progress }: { progress: number }) => {
+            if (this.progressCallback) this.progressCallback(Math.round(progress * 100));
+        });
+    }
 
     // Use the Single Threaded version of the core to ensure compatibility
+    // This avoids SharedArrayBuffer requirements which often fail without specific server headers
     const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
     const { toBlobURL } = this.globalUtil;
     
     try {
+        // Fetch scripts and create local Blob URLs to bypass CORS worker restrictions
+        const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+        const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+
         await this.ffmpeg.load({
-            coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-            wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+            coreURL: coreURL,
+            wasmURL: wasmURL,
         });
         this.loaded = true;
     } catch (e) {
         console.error("Failed to load FFmpeg core:", e);
-        throw new Error("Failed to initialize video engine. Please refresh.");
+        throw new Error("Failed to initialize video engine. Network or CORS error.");
     }
   }
 
   setLogger(callback: (message: string) => void) {
     this.logCallback = callback;
-    this.ensureInstance();
+    // We do not force initialization here to avoid premature errors. 
+    // The callback will be used once load() is called by the main process.
   }
 
   setProgress(callback: (progress: number) => void) {
     this.progressCallback = callback;
-    this.ensureInstance();
+  }
+
+  /**
+   * Helper to convert Hex color to ASS format (&H00BBGGRR)
+   */
+  private toAssColor(hex: string): string {
+    // Remove # if present
+    const cleanHex = hex.replace('#', '');
+    if (cleanHex.length !== 6) return '&H00FFFFFF';
+    
+    const r = cleanHex.substring(0, 2);
+    const g = cleanHex.substring(2, 4);
+    const b = cleanHex.substring(4, 6);
+    
+    // ASS is BGR
+    return `&H00${b}${g}${r}`;
+  }
+
+  private generateStyleString(style: SubtitleStyle): string {
+    const primary = this.toAssColor(style.primaryColor);
+    const outline = this.toAssColor(style.outlineColor);
+    const bold = style.bold ? '1' : '0';
+    const italic = style.italic ? '1' : '0';
+    
+    // BorderStyle=1 is Outline (standard), 3 is Box
+    return `FontName=Arial,FontSize=${style.fontSize},PrimaryColour=${primary},OutlineColour=${outline},BackColour=&H80000000,BorderStyle=1,Outline=${style.outlineWidth},Shadow=0,MarginV=${style.marginV},Alignment=${style.alignment},Bold=${bold},Italic=${italic}`;
   }
 
   async createPreview(
     videoFile: File,
     subFile: File | null,
-    fps: number
+    fps: number,
+    style: SubtitleStyle
   ): Promise<string> {
     await this.load();
     const { fetchFile } = this.globalUtil;
 
     const inputName = 'preview_input.mp4';
-    const subName = 'preview_sub.srt';
+    let subName = 'preview_sub.srt'; // Default, will be updated if file exists
     const outputName = 'preview_output.mp4';
 
     // Optimization: Slice the video file.
@@ -85,39 +132,42 @@ export class FFmpegService {
     const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB
     const videoSlice = videoFile.slice(0, Math.min(videoFile.size, CHUNK_SIZE));
 
-    // Write files to memory (MEMFS) for preview as it's small
-    await this.ffmpeg.writeFile(inputName, await fetchFile(videoSlice));
-    
-    if (subFile) {
-      await this.ffmpeg.writeFile(subName, await fetchFile(subFile));
-    }
-
-    const args = [
-      '-i', inputName,
-      '-t', '5', // Limit duration to 5 seconds
-    ];
-
-    // Video Filter Chain
-    const filters: string[] = [];
-    
-    if (subFile) {
-      // Bold styling for JAV aesthetic
-      filters.push(`subtitles=${subName}:force_style='FontName=Arial,Fontsize=24,PrimaryColour=&H0000FFFF,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=0,MarginV=30,Bold=1'`);
-    }
-
-    if (filters.length > 0) {
-      args.push('-vf', filters.join(','));
-    }
-
-    // Set Frame Rate
-    args.push('-r', fps.toString());
-
-    // Output settings
-    args.push('-c:a', 'copy');
-    args.push('-preset', 'ultrafast'); 
-    args.push(outputName);
-
     try {
+      // Write files to memory (MEMFS) for preview as it's small
+      await this.ffmpeg.writeFile(inputName, await fetchFile(videoSlice));
+      
+      if (subFile) {
+        // Detect extension to support .ass, .vtt, .srt
+        const ext = subFile.name.split('.').pop()?.toLowerCase() || 'srt';
+        subName = `preview_sub.${ext}`;
+        await this.ffmpeg.writeFile(subName, await fetchFile(subFile));
+      }
+
+      const args = [
+        '-i', inputName,
+        '-t', '5', // Limit duration to 5 seconds
+      ];
+
+      // Video Filter Chain
+      const filters: string[] = [];
+      
+      if (subFile) {
+        const styleStr = this.generateStyleString(style);
+        filters.push(`subtitles=${subName}:force_style='${styleStr}'`);
+      }
+
+      if (filters.length > 0) {
+        args.push('-vf', filters.join(','));
+      }
+
+      // Set Frame Rate
+      args.push('-r', fps.toString());
+
+      // Output settings
+      args.push('-c:a', 'copy');
+      args.push('-preset', 'ultrafast'); 
+      args.push(outputName);
+
       await this.ffmpeg.exec(args);
       const data = await this.ffmpeg.readFile(outputName);
       const blob = new Blob([data], { type: 'video/mp4' });
@@ -130,10 +180,9 @@ export class FFmpegService {
       return URL.createObjectURL(blob);
     } catch (error) {
       console.error('Preview generation error:', error);
-      try {
-        await this.ffmpeg.deleteFile(inputName);
-        if (subFile) await this.ffmpeg.deleteFile(subName);
-      } catch (e) {}
+      // Attempt cleanup
+      try { await this.ffmpeg.deleteFile(inputName); } catch(e) {}
+      try { if(subFile) await this.ffmpeg.deleteFile(subName); } catch(e) {}
       throw new Error("Failed to generate preview. The file format might not support partial reading.");
     }
   }
@@ -142,53 +191,78 @@ export class FFmpegService {
     videoFile: File,
     subFile: File | null,
     fps: number,
-    outputName: string
+    outputName: string,
+    style: SubtitleStyle
   ): Promise<string> {
     await this.load();
     const { fetchFile } = this.globalUtil;
 
     const mountDir = '/mnt_input';
-    const subName = 'subtitles.srt';
-    // CRITICAL FIX: Do NOT rename/sanitize the input filename variable here.
-    // The file mounted in WORKERFS retains its original `videoFile.name`.
-    // If we change the path string but not the file, FFmpeg won't find it.
-    const inputPath = `${mountDir}/${videoFile.name}`;
+    let subName = 'subtitles.srt'; // Default
+    
+    // SAFE FILENAME STRATEGY
+    // We create a standardized filename to avoid FFmpeg command line errors with spaces/emojis.
+    // This creates a new File reference pointing to the same data (zero-copy).
+    const safeInputName = 'source_video.mp4';
+    const safeVideoFile = new File([videoFile], safeInputName, { type: videoFile.type });
+    const inputPath = `${mountDir}/${safeInputName}`;
+    
+    // Large File Optimization Thresholds
+    const isLargeFile = videoFile.size > 2 * 1024 * 1024 * 1024; // > 2GB
+    const isMassiveFile = videoFile.size > 10 * 1024 * 1024 * 1024; // > 10GB
     
     let usedMount = false;
+
+    // CRITICAL CLEANUP: Ensure previous session mounts are gone
+    try {
+        await this.ffmpeg.unmount(mountDir);
+        await this.ffmpeg.deleteDir(mountDir);
+    } catch (e) {
+        // Directory usually doesn't exist, ignore error
+    }
 
     try {
         // Attempt to mount the file system
         // WORKERFS allows reading directly from the File object without loading it into RAM.
         await this.ffmpeg.createDir(mountDir);
-        await this.ffmpeg.mount('WORKERFS', { files: [videoFile] }, mountDir);
+        await this.ffmpeg.mount('WORKERFS', { files: [safeVideoFile] }, mountDir);
         usedMount = true;
     } catch (e) {
         console.warn("WORKERFS mount failed:", e);
-        // SAFETY CHECK: If file is > 2GB, do not attempt to write to memory. It will crash.
-        if (videoFile.size > 2 * 1024 * 1024 * 1024) {
-             throw new Error("System Error: Could not mount large file system. Browser security settings or device memory may be restricting access.");
+        // SAFETY CHECK: If file is > 2GB, do not attempt to write to memory.
+        if (isLargeFile) {
+             throw new Error("Processing failed. System could not mount large file. Please use a browser that supports WORKERFS (Chrome/Edge/Firefox).");
         }
         
         // Fallback for smaller files only
         const simpleName = 'input.mp4';
         await this.ffmpeg.writeFile(simpleName, await fetchFile(videoFile));
-        // Update inputPath to point to the MEMFS file
-        // Note: we can't easily reassign inputPath constant, so we handle this in args logic or just fail if mount fails for consistency on large app.
-        // For this fix, let's assume we proceed with the mounted path logic if mount succeeded, else throw.
-        throw new Error("Could not initialize file system for processing.");
+        throw new Error("System Error: Could not mount file system. Please refresh and try again.");
     }
 
     if (subFile) {
+      // Detect extension to support .ass, .vtt, .srt
+      const ext = subFile.name.split('.').pop()?.toLowerCase() || 'srt';
+      subName = `subtitles.${ext}`;
       await this.ffmpeg.writeFile(subName, await fetchFile(subFile));
     }
 
     const args = ['-i', inputPath];
 
-    // Video Filter Chain
+    // Filter Construction
     const filters: string[] = [];
     
+    // Optimization: Downscale large files to ensure output fits in browser memory (MEMFS limit)
+    if (isLargeFile) {
+        if (this.logCallback) this.logCallback("Large file detected: Activating 720p downscaling to prevent memory crash...");
+        // Scale to 720p height, keep aspect ratio (-2)
+        // NOTE: Scaling must happen BEFORE burning subtitles for better performance, 
+        filters.push('scale=-2:720');
+    }
+
     if (subFile) {
-      filters.push(`subtitles=${subName}:force_style='FontName=Arial,Fontsize=24,PrimaryColour=&H0000FFFF,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=0,MarginV=30,Bold=1'`);
+      const styleStr = this.generateStyleString(style);
+      filters.push(`subtitles=${subName}:force_style='${styleStr}'`);
     }
 
     if (filters.length > 0) {
@@ -197,11 +271,27 @@ export class FFmpegService {
 
     args.push('-r', fps.toString());
     
-    // Performance settings for large files
+    // Codec & Performance Settings
     args.push('-c:v', 'libx264');
-    args.push('-preset', 'ultrafast'); // Max speed, slightly larger file
-    args.push('-max_muxing_queue_size', '9999'); // Prevent "Too many packets buffered" error
-    args.push('-c:a', 'copy');
+    
+    if (isLargeFile) {
+        // Aggressive optimization for large files
+        args.push('-preset', 'ultrafast'); // Max encoding speed
+        args.push('-crf', '28'); // Higher CRF = lower bitrate = smaller output file (saves RAM)
+        args.push('-tune', 'fastdecode');
+        
+        if (isMassiveFile) {
+            // Limit threads to reduce WASM stack memory usage per thread
+            args.push('-threads', '2');
+        }
+    } else {
+        args.push('-preset', 'veryfast');
+        args.push('-crf', '23'); // Standard quality
+    }
+
+    // Safety flags
+    args.push('-max_muxing_queue_size', '9999'); 
+    args.push('-c:a', 'copy'); // Copy audio to save CPU/RAM
     args.push(outputName);
 
     try {
@@ -210,10 +300,13 @@ export class FFmpegService {
             throw new Error(`FFmpeg exited with code ${result}. Check logs.`);
         }
     } catch (e) {
-        // Cleanup attempt
+        console.error("FFmpeg Execution Error:", e);
+        // Force cleanup if execution fails
         if (usedMount) {
-            await this.ffmpeg.unmount(mountDir);
-            await this.ffmpeg.deleteDir(mountDir);
+            try {
+                await this.ffmpeg.unmount(mountDir);
+                await this.ffmpeg.deleteDir(mountDir);
+            } catch(cleanErr) {}
         }
         throw e;
     }
@@ -223,15 +316,17 @@ export class FFmpegService {
     try {
         data = await this.ffmpeg.readFile(outputName);
     } catch (e) {
-        throw new Error("Output file generation failed. The result might have exceeded browser memory limits (2GB+).");
+        throw new Error("Output generation failed. The result file size exceeded browser memory limits (approx 2GB). Try reducing duration or using a computer with more RAM.");
     }
     
     const blob = new Blob([data], { type: 'video/mp4' });
 
-    // Cleanup
+    // Final Cleanup
     if (usedMount) {
-        await this.ffmpeg.unmount(mountDir);
-        await this.ffmpeg.deleteDir(mountDir);
+        try {
+            await this.ffmpeg.unmount(mountDir);
+            await this.ffmpeg.deleteDir(mountDir);
+        } catch(e) {}
     }
     
     if (subFile) await this.ffmpeg.deleteFile(subName);
